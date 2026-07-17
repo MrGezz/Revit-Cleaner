@@ -79,6 +79,28 @@ Every run writes a full transcript to `%TEMP%\Uninstall-Revit2026_<timestamp>.lo
 
 Change `$ProductYear` and `$CorePatterns` near the top of the script. The sweep rule, exclusions, resolution order, and residual-path pattern all parameterize by year — no other edits required.
 
+## Reinstalling Revit later
+
+This uninstaller is reinstall-safe. It removes products through Autodesk's own
+uninstallers (ODIS `installer.exe` and `msiexec` by product code), so product
+registrations are cleared properly rather than force-deleted, and it preserves
+the Autodesk installer framework (ODIS / Autodesk Access), Genuine Service,
+licensing, and shared libraries that a reinstall depends on. Residual folders it
+deletes (settings, journals, add-in manifests, content, program folder) are
+recreated by the installer.
+
+When you want Revit back:
+
+1. **Reboot first.** Not mandatory unless a run reported exit code `3010`
+   (reboot required), but it clears pending file operations and is standard
+   pre-reinstall hygiene.
+2. **Install through Autodesk Access / your Autodesk account**, not a leftover
+   local installer, so you get a fresh package and can re-add the content packs
+   that were removed.
+3. If Autodesk Access still shows the product as "installed" (a UI-cache quirk
+   that can occur when you uninstall outside Access), refresh/repair or reboot
+   and it will correct itself.
+
 ## Notes and limitations
 
 - The core Revit ODIS uninstall can take a while (it removes each sub-component MSI in sequence); MSI-based add-ins take seconds each.

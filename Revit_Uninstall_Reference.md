@@ -52,8 +52,9 @@ were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
    `-Force` skipped your own `Read-Host`. Fix: when `-Force` is set, also set
    `$ConfirmPreference = 'None'` in script scope (inherited by nested advanced
    functions). Note MSI `/qn` is fully silent; ODIS EXE uninstallers may still
-   show their own progress UI — attempt a `--silent` variant but keep the exact
-   vendor command as an automatic fallback so a wrong flag can't block removal.
+   show their own progress UI — `--silent` is a valid AdODIS 2026 flag (confirmed
+   working, exit 0), but keep the exact vendor command as an automatic fallback
+   so a wrong flag can't block removal.
 
 ## Product-selection rule (the reliable part)
 
@@ -69,6 +70,10 @@ were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
     version-neutral interop manager (no year in the name → excluded automatically).
 - **Why AutoCAD/Navisworks are safe:** their names contain no `Revit`, so the
   "Revit + year" rule never matches them even when they share the year.
+- **RealDWG is not AutoCAD's.** `Autodesk RealDWG Shared <year>` is the
+  redistributable DWG read/write engine for *non-AutoCAD* apps (Revit, Navisworks,
+  Civil 3D...). AutoCAD uses its own core and does not need it. Keep it while any
+  non-AutoCAD DWG consumer of that year remains (e.g. Navisworks 2026).
 - **Note:** a product GUID may coincidentally contain the year digits (e.g.
   `{05BC6921-2026-49D7-...}`); this is harmless because matching is by display
   name, not by GUID. De-dupe msiexec candidates by extracted GUID (case- and
@@ -97,8 +102,18 @@ success. Try each candidate in order; fall through on any other code.
 - FormIt Converter for Revit 2026 (MSI): `{06E56058-9DC2-4B06-8454-D0092F08B9A8}`
 - Advance Steel Server Registration for Revit Engine 2026 (MSI):
   `{05BC6921-2026-49D7-A01B-4A9DBE15581D}`
+- Autodesk Revit DB Link 2026 (MSI): `{282CD6A9-2601-0010-0000-A6206F572600}`
+- OpenStudio CLI For Revit 2026 (MSI): `{EA0B0CD5-0756-43D3-A1D4-D51AAD42D6C2}`
+- Revit IFC 2026 (MSI): `{1A9C2C21-2641-4205-0000-992E73C12600}`
+- Steel Connections Content for Revit 2026 (MSI):
+  `{1DAE3481-2026-46E6-A564-4C485D16FA1D}`
 - Autodesk Data Exchange Connector for Revit 2026 (ODIS bundle):
   `{11C6BD4C-0824-3E47-8AD1-DD9B28F18458}`
+- US English Content for Revit 2026 (ODIS): `{E07688C3-1A78-3878-AD37-37E99F24BF92}`
+- US English Residential Content v2 for Revit 2026 (ODIS):
+  `{AAEF7B36-A583-395F-9392-4DC329A3CC23}`
+- IFC for Revit 2026 (ODIS): `{EFC3FCBD-7928-338F-8171-AF2621D7C7AE}`
+- Revit DB Link for Revit 2026 (ODIS): `{C59850DE-991B-3A18-8ABA-4F1111A0CBEE}`
 
 Orphaned Revit-2026 add-ins/content swept after the core removal (18 total):
 Advance Steel Server Registration, Data Exchange Connector, Interoperability
@@ -148,8 +163,26 @@ powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -IncludeAddin
 Re-running is idempotent: already-removed items no longer match, and `1605`
 ("already gone") is treated as success.
 
+## Reinstalling Revit later (reinstall-safe)
+
+This teardown does not block a later reinstall, because it removes products via
+Autodesk's own uninstallers (ODIS + msiexec), clearing registrations properly
+rather than force-deleting them, and it preserves the installer framework
+(ODIS / Autodesk Access), Genuine Service, licensing, and shared libraries a
+reinstall depends on. Deleted residual folders are recreated by the installer;
+no registry keys are hand-edited (the usual source of reinstall problems).
+
+Steps when reinstalling:
+
+1. **Reboot first** — mandatory only if a run reported exit `3010`, otherwise
+   just good hygiene to clear pending file operations.
+2. **Install through Autodesk Access / the Autodesk account**, not a stale local
+   installer, to get a fresh package and re-add removed content packs.
+3. If Autodesk Access still lists the product as installed (UI-cache quirk from
+   uninstalling outside Access), refresh/repair or reboot to correct it.
+
 ## Reusing for another year
 
 Change `$ProductYear` and `$CorePatterns` in the script. The "Revit + year"
 sweep rule, exclusions, resolution order, and residual-path pattern all
-parameterize by year with no other changes.{\rtf1}
+parameterize by year with no other changes.
