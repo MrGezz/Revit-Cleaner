@@ -1,20 +1,21 @@
-# Uninstall-Revit2026
+# Revit-Cleaner (`Uninstall-Revit.ps1`)
 
-A scoped, self-elevating PowerShell script that cleanly uninstalls **Autodesk Revit 2026** on Windows — the core application plus its orphaned add-ins, content packs, and exporters — while deliberately preserving shared Autodesk components and other Autodesk products (AutoCAD, Navisworks, other Revit versions).
+A scoped, self-elevating PowerShell script that cleanly uninstalls **any year of Autodesk Revit** on Windows — the core application plus its orphaned add-ins, content packs, and exporters — while deliberately preserving shared Autodesk components and other Autodesk products (AutoCAD, Navisworks, other Revit versions). The target release is chosen with `-ProductYear` (default `2026`).
 
 Autodesk products don't uninstall as a single item. The core application, every add-in, and each content pack register as **separate** entries in Add/Remove Programs, and the core product uses Autodesk's ODIS installer whose command line is unquoted and easy to invoke incorrectly. This script discovers the right entries from the registry, invokes each vendor uninstaller correctly, and stops short of anything shared.
 
-> Built and hardened against a real Revit 2026 install. It is conservative by design: it previews before acting, refuses to touch cross-version or shared components, and logs everything.
+> Built and hardened against a real Revit 2026 removal, then generalized to any year. Conservative by design: it previews before acting, refuses to touch cross-version or shared components, and logs everything.
 
 ## Features
 
+- **Any Revit year** via `-ProductYear` — one script for 2023–2027+.
 - **Registry-driven discovery** across the 64-bit, 32-bit (WOW6432Node), and per-user uninstall hives — no hardcoded product GUIDs.
 - **Correct ODIS invocation.** Runs Autodesk's `AdODIS\V1\installer.exe` directly (not through `cmd`), so its unquoted, space-containing path is handled properly.
 - **Multi-method resolution** per product: MSI product code → `QuietUninstallString` → raw `UninstallString`, trying each in order until one succeeds.
 - **Precise "Revit + year" sweep** for orphaned add-ins/content, with hard exclusions for shared and cross-version components.
-- **Self-elevation** via UAC — launch from a normal shell.
+- **Self-elevation** via UAC — launch from a normal shell (handles script paths containing spaces).
 - **Preview mode** (`-ListOnly`) and full `-WhatIf` support.
-- **Safe residual cleanup**, gated on a successful uninstall and guarded so it can only ever delete Revit/RVT 2026 folders under an Autodesk tree.
+- **Safe residual cleanup**, gated on a successful uninstall and guarded so it can only ever delete Revit/RVT `<year>` folders under an Autodesk tree.
 - **Transcript logging** to `%TEMP%`.
 
 ## Requirements
@@ -26,17 +27,20 @@ Autodesk products don't uninstall as a single item. The core application, every 
 ## Usage
 
 ```powershell
-# Preview only — lists matched products and residual folders, changes nothing:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -ListOnly
+# Preview only for the default year (2026) — lists matches, changes nothing:
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ListOnly
+
+# Preview a specific year:
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2024 -ListOnly
 
 # Interactive — prompts before each product and each residual folder:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2024
 
 # Fully unattended and silent — closes Revit if open, no prompts:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -StopRevit -Force
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2025 -StopRevit -Force
 
 # Core application only — skip add-ins and residual cleanup:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -IncludeAddins:$false -RemoveResidualFiles:$false
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2026 -IncludeAddins:$false -RemoveResidualFiles:$false
 ```
 
 Run `-ListOnly` first. It is the safety gate: it shows exactly what will be removed before you commit.
@@ -45,8 +49,9 @@ Run `-ListOnly` first. It is the safety gate: it shows exactly what will be remo
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `-ProductYear` | string | `2026` | Four-digit Revit release year to target (e.g. `2024`). Scopes the core match, add-in sweep, residual folders, the residual guard, and the self-elevation relaunch. Validated as four digits. |
 | `-IncludeAddins` | bool | `$true` | Also remove every product whose name references Revit **and** the target year (add-ins, content, exporters, DB Link, IFC, interop tools). Disable with `-IncludeAddins:$false`. |
-| `-RemoveResidualFiles` | bool | `$true` | After a successful uninstall, delete leftover Revit-2026-specific folders (settings, journals, add-in manifests, RVT content, program folder). Disable with `-RemoveResidualFiles:$false`. |
+| `-RemoveResidualFiles` | bool | `$true` | After a successful uninstall, delete leftover Revit-`<year>`-specific folders (settings, journals, add-in manifests, RVT content, program folder). Disable with `-RemoveResidualFiles:$false`. |
 | `-StopRevit` | switch | off | Terminate `Revit.exe` if running. Without it, the script aborts when Revit is open. |
 | `-ListOnly` | switch | off | Discover and print matches, then exit. No changes. |
 | `-Force` | switch | off | Fully non-interactive: skips per-item prompts **and** suppresses PowerShell's built-in confirmation. |
@@ -73,11 +78,7 @@ Exit codes `0`, `3010` (reboot required), and `1605` (already gone) are treated 
 
 ## Logging
 
-Every run writes a full transcript to `%TEMP%\Uninstall-Revit2026_<timestamp>.log`, including each product matched, the exact command invoked, and the exit code. Attach this log when reporting issues.
-
-## Reusing for another Revit year
-
-Change `$ProductYear` and `$CorePatterns` near the top of the script. The sweep rule, exclusions, resolution order, and residual-path pattern all parameterize by year — no other edits required.
+Every run writes a full transcript to `%TEMP%\Uninstall-Revit<year>_<timestamp>.log`, including each product matched, the exact command invoked, and the exit code. Attach this log when reporting issues.
 
 ## Reinstalling Revit later
 
@@ -105,6 +106,7 @@ When you want Revit back:
 
 - The core Revit ODIS uninstall can take a while (it removes each sub-component MSI in sequence); MSI-based add-ins take seconds each.
 - Some third-party or ODIS uninstallers display their own progress UI regardless of silent flags. `msiexec` items run fully silent.
+- Self-elevation opens a separate elevated window that closes on completion — watch the `%TEMP%` log for results rather than the original window.
 - Tested on Windows PowerShell 5.1. PowerShell 7 should work but is not the primary target.
 - This tool is not affiliated with or endorsed by Autodesk. "Revit", "AutoCAD", and "Navisworks" are trademarks of Autodesk, Inc.
 

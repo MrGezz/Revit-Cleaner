@@ -3,9 +3,10 @@
 Working knowledge for scripting a clean, scoped uninstall of an Autodesk Revit
 product on Windows without disturbing shared components or other Autodesk apps.
 Derived from a verified Revit 2026 removal on machine `ICECREAMASSASIN`
-(2026-07-17). The delivered script is `Uninstall-Revit2026.ps1` (PowerShell 5.1
-compatible, self-elevating). Published to GitHub with an MIT LICENSE and a
-README (author: MrGezz).
+(2026-07-17), then generalized to any year. The delivered script is
+`Uninstall-Revit.ps1` (PowerShell 5.1 compatible, self-elevating,
+year-parameterized via `-ProductYear`, default 2026). Published to GitHub with
+an MIT LICENSE and a README (author: MrGezz).
 
 ## What worked
 
@@ -166,13 +167,13 @@ reference `Revit`/`RVT`, and contain `2026`; anything else is refused.
 
 ```powershell
 # Preview only (safe first run) — lists matched products + residual folders:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -ListOnly
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2026 -ListOnly
 
 # Full removal (core + orphaned add-ins + residual), unattended and silent:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -StopRevit -Force
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2026 -StopRevit -Force
 
 # Core product only:
-powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -IncludeAddins:$false -RemoveResidualFiles:$false
+powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2026 -IncludeAddins:$false -RemoveResidualFiles:$false
 ```
 
 Re-running is idempotent: already-removed items no longer match, and `1605`
@@ -199,12 +200,16 @@ Steps when reinstalling:
 
 ## Repo
 
-Lives at `C:\Users\IceCreamAssasin\source\repos\Revit-Cleaner` (git). Files:
-`Uninstall-Revit2026.ps1`, `README.md`, `LICENSE` (MIT), and this reference
-(`Revit_Uninstall_Reference.md`). User handles git commits manually.
+Lives at `C:\Users\IcZ\source\repos\Revit-Cleaner` (git). Files:
+`Uninstall-Revit.ps1`, `README.md`, `LICENSE` (MIT), and this reference
+(`Revit_Uninstall_Reference.md`). User handles git commits manually. The old
+`Uninstall-Revit2026.ps1` was renamed to `Uninstall-Revit.ps1`
+(`git rm`/`git mv` the stale name).
 
-## Reusing for another year
+## Targeting another year
 
-Change `$ProductYear` and `$CorePatterns` in the script. The "Revit + year"
-sweep rule, exclusions, resolution order, and residual-path pattern all
-parameterize by year with no other changes.
+Pass `-ProductYear <yyyy>` (e.g. `-ProductYear 2024`); default is `2026`. The
+core match, the "Revit + year" add-in sweep, the residual folders, the residual
+path guard, and the self-elevation relaunch are all scoped to that value — no
+edits required. The exclusions (version-range packs, RealDWG, Content Catalog,
+shared/version-neutral components) are year-agnostic and always apply.

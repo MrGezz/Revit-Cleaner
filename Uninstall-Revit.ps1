@@ -1,40 +1,50 @@
 <#
 .SYNOPSIS
-    Uninstalls the Autodesk Revit 2026 core product (Revit only) on Windows.
+    Uninstalls an Autodesk Revit product (any year) and its orphaned add-ins on
+    Windows, preserving shared and cross-version Autodesk components.
 
 .DESCRIPTION
-    Discovers the installed Autodesk Revit 2026 product by reading the Windows
-    "Uninstall" registry hives (64-bit, 32-bit/WOW6432Node, and per-user), then
-    runs the vendor-registered uninstaller silently.
+    Discovers the installed Autodesk Revit product for the target year
+    (-ProductYear, default 2026) by reading the Windows "Uninstall" registry
+    hives (64-bit, 32-bit/WOW6432Node, and per-user), then runs each
+    vendor-registered uninstaller silently.
 
-    Scope is deliberately conservative: by default ONLY the core Revit 2026
-    application is removed. Shared Autodesk components (Material Libraries,
-    Content/Template Libraries, Licensing / Desktop Licensing Service, Genuine
-    Service, Identity Manager, ODIS installer, Autodesk Access) are left in
-    place because other Autodesk products (Civil 3D, AutoCAD, Navisworks, etc.)
-    depend on them. Revit-specific 2026 add-ins (Batch Print, eTransmit, Model
-    Review, Coordination Model, FormIt Converter, Personal Accelerator, Cloud
-    Models for Revit) are only removed when -IncludeAddins is supplied.
+    Scope is deliberately conservative: the core Revit <year> application is
+    always removed; with -IncludeAddins (default on) every product whose name
+    references Revit AND the target year is also removed (add-ins, content
+    packs, exporters, DB Link, IFC, interop tools). Shared and cross-version
+    components (Material/Content Libraries, Licensing / Desktop Licensing
+    Service, Genuine Service, Identity Manager, ODIS installer, Autodesk Access,
+    RealDWG, Content Catalog year-range packs) are always preserved because
+    other Autodesk products (Civil 3D, AutoCAD, Navisworks, other Revit years)
+    depend on them.
 
     Resolution order for each product's uninstall command:
-        1. QuietUninstallString (vendor-provided silent command)
-        2. msiexec /x {ProductCode} /qn /norestart   (when WindowsInstaller = 1)
-        3. UninstallString (interactive fallback; /qn appended for msiexec)
+        1. msiexec /x {ProductCode} /qn /norestart   (when WindowsInstaller = 1)
+        2. QuietUninstallString (vendor-provided silent command)
+        3. UninstallString (run directly; --silent attempted for ODIS EXE
+           uninstallers, with the exact vendor command kept as an auto fallback)
+
+.PARAMETER ProductYear
+    Four-digit Revit release year to target (e.g. 2023, 2024, 2025, 2026).
+    Default: 2026. Everything - the core product match, the orphaned-add-in
+    sweep, the residual folders, the residual path guard, and the self-elevation
+    relaunch - is scoped to this year.
 
 .PARAMETER IncludeAddins
     Also remove every product whose name references Revit and the target year
-    (2026) - add-ins, content packs, exporters, DB Link, IFC, interop tools,
-    etc. - which are orphaned once the core application is gone. Default: $true.
+    - add-ins, content packs, exporters, DB Link, IFC, interop tools, etc. -
+    which are orphaned once the core application is gone. Default: $true.
     Disable with -IncludeAddins:$false. Cross-version and shared components
-    (Content Catalog 2024-2027, RealDWG, version-neutral interop managers,
-    material libraries, licensing) are always preserved.
+    (Content Catalog year-range packs, RealDWG, version-neutral interop
+    managers, material libraries, licensing) are always preserved.
 
 .PARAMETER RemoveResidualFiles
-    After uninstall, delete leftover Revit 2026-specific folders (per-user
-    settings/journals, add-in manifests, RVT 2026 content/templates, and any
-    residual Revit 2026 program folder). Default: $true. Disable with
-    -RemoveResidualFiles:$false. A runtime guard only permits deletion of
-    paths under an Autodesk tree that reference Revit/RVT and 2026; shared
+    After a successful uninstall, delete leftover Revit <year>-specific folders
+    (per-user settings/journals, add-in manifests, RVT content/templates, and
+    any residual Revit <year> program folder). Default: $true. Disable with
+    -RemoveResidualFiles:$false. A runtime guard only permits deletion of paths
+    under an Autodesk tree that reference Revit/RVT and the target year; shared
     Autodesk trees are never removed.
 
 .PARAMETER StopRevit
@@ -52,23 +62,23 @@
 
 .PARAMETER LogPath
     Full path for the transcript log. Defaults to
-    %TEMP%\Uninstall-Revit2026_<timestamp>.log
+    %TEMP%\Uninstall-Revit<year>_<timestamp>.log
 
 .EXAMPLE
-    # Preview everything that would be removed (products + residual folders), no changes:
-    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -ListOnly
+    # Preview what would be removed for the default year (2026), no changes:
+    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ListOnly
 
 .EXAMPLE
-    # Uninstall Revit 2026 + Revit-only add-ins + residual files, prompting each step:
-    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1
+    # Uninstall Revit 2024 + its add-ins + residual files, prompting each step:
+    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2024
 
 .EXAMPLE
-    # Fully unattended, close Revit if open, no prompts:
-    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -StopRevit -Force
+    # Fully unattended and silent for Revit 2025, close Revit if open:
+    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2025 -StopRevit -Force
 
 .EXAMPLE
     # Core product only (skip add-ins and residual cleanup):
-    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -IncludeAddins:$false -RemoveResidualFiles:$false
+    powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit.ps1 -ProductYear 2026 -IncludeAddins:$false -RemoveResidualFiles:$false
 
 .NOTES
     Requires an elevated (Administrator) session; the script self-elevates.
@@ -78,6 +88,8 @@
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
+    [ValidatePattern('^\d{4}$')]
+    [string]$ProductYear       = '2026',
     [bool]$IncludeAddins       = $true,
     [bool]$RemoveResidualFiles = $true,
     [switch]$StopRevit,
@@ -95,24 +107,12 @@ Set-StrictMode -Version Latest
 if ($Force) { $ConfirmPreference = 'None' }
 
 # --- Configuration --------------------------------------------------------
-$ProductYear = '2026'
+# $ProductYear is supplied by the -ProductYear parameter (default 2026) and
+# scopes every match below.
 
 # Core product: always targeted.
 $CorePatterns = @(
-    'Autodesk Revit 2026'
-)
-
-# Revit-only add-ins: targeted only with -IncludeAddins.
-$AddinPatterns = @(
-    'Batch Print*Revit 2026',
-    'eTransmit*Revit 2026',
-    'Model Review*2026',
-    'Coordination Model*Revit 2026',
-    'FormIt Converter*Revit 2026',
-    'Personal Accelerator for Revit*2026',
-    'Cloud Models for Revit 2026',
-    'Autodesk Revit Content Libraries 2026',   # Revit-specific content, not the shared material lib
-    'Revit*2026*Add-in'
+    "Autodesk Revit $ProductYear"
 )
 
 # Shared / cross-product components: NEVER touched in this mode.
@@ -138,16 +138,16 @@ $SharedExclusions = @(
     '*Desktop Connector*'
 )
 
-# Revit 2026-specific residual folders removed only with -RemoveResidualFiles.
-# Every entry references a Revit/RVT 2026 path; shared Autodesk trees are never
+# Revit <year>-specific residual folders removed only with -RemoveResidualFiles.
+# Every entry references a Revit/RVT <year> path; shared Autodesk trees are never
 # listed here, and a runtime guard re-verifies each path before deletion.
 $ResidualPaths = @(
-    (Join-Path $env:APPDATA        'Autodesk\Revit\Autodesk Revit 2026'),
-    (Join-Path $env:LOCALAPPDATA   'Autodesk\Revit\Autodesk Revit 2026'),
-    (Join-Path $env:APPDATA        'Autodesk\Revit\Addins\2026'),
-    (Join-Path $env:ProgramData    'Autodesk\Revit\Addins\2026'),
-    (Join-Path $env:ProgramData    'Autodesk\RVT 2026'),
-    (Join-Path ${env:ProgramFiles} 'Autodesk\Revit 2026')
+    (Join-Path $env:APPDATA        "Autodesk\Revit\Autodesk Revit $ProductYear"),
+    (Join-Path $env:LOCALAPPDATA   "Autodesk\Revit\Autodesk Revit $ProductYear"),
+    (Join-Path $env:APPDATA        "Autodesk\Revit\Addins\$ProductYear"),
+    (Join-Path $env:ProgramData    "Autodesk\Revit\Addins\$ProductYear"),
+    (Join-Path $env:ProgramData    "Autodesk\RVT $ProductYear"),
+    (Join-Path ${env:ProgramFiles} "Autodesk\Revit $ProductYear")
 )
 
 # --- Self-elevation -------------------------------------------------------
@@ -173,6 +173,7 @@ if (-not (Test-IsAdministrator)) {
     # which silently breaks self-elevation. A single pre-quoted string is passed
     # to the child verbatim.
     $passArgs = @()
+    $passArgs += ('-ProductYear {0}'         -f $ProductYear)
     $passArgs += ('-IncludeAddins:{0}'       -f $IncludeAddins)
     $passArgs += ('-RemoveResidualFiles:{0}' -f $RemoveResidualFiles)
     if ($StopRevit) { $passArgs += '-StopRevit' }
@@ -200,7 +201,7 @@ if (-not (Test-IsAdministrator)) {
 # --- Logging --------------------------------------------------------------
 if (-not $LogPath) {
     $stamp   = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $LogPath = Join-Path $env:TEMP "Uninstall-Revit2026_$stamp.log"
+    $LogPath = Join-Path $env:TEMP "Uninstall-Revit${ProductYear}_$stamp.log"
 }
 try { Start-Transcript -Path $LogPath -Append | Out-Null } catch { }
 
@@ -311,7 +312,7 @@ if ($ListOnly) {
             $existing | ForEach-Object { Write-Log "    - $_" }
         }
         else {
-            Write-Log 'No Revit 2026 residual folders found.'
+            Write-Log "No Revit $ProductYear residual folders found."
         }
     }
     Write-Log 'ListOnly specified - no changes made.' 'OK'
@@ -495,13 +496,13 @@ function Remove-ResidualFiles {
         if (-not (Test-Path -LiteralPath $path)) { continue }
 
         # Hard safety guard: only delete paths under an Autodesk tree that
-        # reference Revit/RVT 2026. Anything else is refused outright.
+        # reference Revit/RVT and the target year. Anything else is refused.
         if ($path -notmatch '(?i)\\Autodesk\\' -or $path -notmatch '(?i)Revit|RVT') {
             Write-Log "Refusing to remove unexpected residual path: $path" 'WARN'
             continue
         }
-        if ($path -notmatch '2026') {
-            Write-Log "Refusing to remove non-2026 residual path: $path" 'WARN'
+        if ($path -notmatch $ProductYear) {
+            Write-Log "Refusing to remove non-$ProductYear residual path: $path" 'WARN'
             continue
         }
 
@@ -531,7 +532,7 @@ if ($RemoveResidualFiles -and $failures -gt 0) {
     Write-Log 'Skipping residual cleanup because one or more products failed to uninstall. Re-run after the uninstall succeeds.' 'WARN'
 }
 elseif ($RemoveResidualFiles) {
-    Write-Log 'Scanning for Revit 2026 residual folders...'
+    Write-Log "Scanning for Revit $ProductYear residual folders..."
     $null = Remove-ResidualFiles -Paths $ResidualPaths
 }
 
