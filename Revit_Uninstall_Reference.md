@@ -14,7 +14,7 @@ installer. The MSI-based add-ins uninstalled instantly by product code.
 Shared components (material libraries, licensing, RealDWG, Content Catalog)
 were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
 
-## Five lessons that cost debugging cycles
+## Six lessons that cost debugging cycles
 
 1. **Never route an Autodesk uninstall command through `cmd /c`.** The ODIS
    `UninstallString` is *unquoted* and its executable path contains a space
@@ -55,6 +55,21 @@ were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
    show their own progress UI — `--silent` is a valid AdODIS 2026 flag (confirmed
    working, exit 0), but keep the exact vendor command as an automatic fallback
    so a wrong flag can't block removal.
+
+6. **Self-elevation must pass a single command-line STRING to `Start-Process`,
+   not an array, when the script path can contain spaces.** In Windows
+   PowerShell 5.1, `Start-Process -ArgumentList @(...)` re-quotes array elements
+   and mangles a `-File` path like `E:\ICZ 2\Desktop\Uninstall-Revit2026.ps1`,
+   so the elevated relaunch silently fails to find the script (self-elevation
+   "does nothing" from a non-admin shell, while an already-admin shell works
+   because the relaunch path is skipped). Fix: build the whole command line as
+   one pre-quoted string —
+   `-NoProfile -ExecutionPolicy Bypass -File "<path>" <args>` — and pass that to
+   `-ArgumentList`. Also guard an empty `$PSCommandPath` (dot-sourced/pasted),
+   treat a thrown `Start-Process` as a cancelled UAC prompt, and default the
+   child `ExitCode` to 0 (it is null for ShellExecute/RunAs launches). Note the
+   elevated relaunch opens a *separate* window that closes on completion — read
+   the `%TEMP%` log for results, not the original window.
 
 ## Product-selection rule (the reliable part)
 
@@ -161,7 +176,8 @@ powershell -ExecutionPolicy Bypass -File .\Uninstall-Revit2026.ps1 -IncludeAddin
 ```
 
 Re-running is idempotent: already-removed items no longer match, and `1605`
-("already gone") is treated as success.
+("already gone") is treated as success. From a non-admin shell the script
+self-elevates (one UAC prompt) and runs in a separate window; watch the log.
 
 ## Reinstalling Revit later (reinstall-safe)
 
@@ -180,6 +196,12 @@ Steps when reinstalling:
    installer, to get a fresh package and re-add removed content packs.
 3. If Autodesk Access still lists the product as installed (UI-cache quirk from
    uninstalling outside Access), refresh/repair or reboot to correct it.
+
+## Repo
+
+Lives at `C:\Users\IceCreamAssasin\source\repos\Revit-Cleaner` (git). Files:
+`Uninstall-Revit2026.ps1`, `README.md`, `LICENSE` (MIT), and this reference
+(`Revit_Uninstall_Reference.md`). User handles git commits manually.
 
 ## Reusing for another year
 

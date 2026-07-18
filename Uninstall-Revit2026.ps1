@@ -160,27 +160,41 @@ function Test-IsAdministrator {
 if (-not (Test-IsAdministrator)) {
     Write-Host 'Elevation required. Relaunching as Administrator...' -ForegroundColor Yellow
 
-    # Rebuild the original argument list for the elevated relaunch.
-    $argList = @(
-        '-NoProfile'
-        '-ExecutionPolicy', 'Bypass'
-        '-File', ('"{0}"' -f $PSCommandPath)
-    )
-    $argList += ('-IncludeAddins:{0}'       -f $IncludeAddins)
-    $argList += ('-RemoveResidualFiles:{0}' -f $RemoveResidualFiles)
-    if ($StopRevit)     { $argList += '-StopRevit' }
-    if ($ListOnly)      { $argList += '-ListOnly' }
-    if ($Force)         { $argList += '-Force' }
-    if ($LogPath)       { $argList += @('-LogPath', ('"{0}"' -f $LogPath)) }
-
-    try {
-        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -PassThru -Wait
-        exit $p.ExitCode
-    }
-    catch {
-        Write-Host "Elevation was cancelled or failed: $($_.Exception.Message)" -ForegroundColor Red
+    # Guard: self-elevation needs the script's own path. It is empty when the
+    # script is dot-sourced or pasted into the console rather than run as a file.
+    if ([string]::IsNullOrWhiteSpace($PSCommandPath)) {
+        Write-Host 'Cannot self-elevate: script path is unknown. Run it with -File (not dot-sourced/pasted), or start an elevated PowerShell first.' -ForegroundColor Red
         exit 1
     }
+
+    # Build the relaunch command line as a SINGLE string, not an array.
+    # Start-Process re-quotes array elements in Windows PowerShell 5.1 and
+    # mangles a script path that contains spaces (e.g. "E:\ICZ 2\Desktop\..."),
+    # which silently breaks self-elevation. A single pre-quoted string is passed
+    # to the child verbatim.
+    $passArgs = @()
+    $passArgs += ('-IncludeAddins:{0}'       -f $IncludeAddins)
+    $passArgs += ('-RemoveResidualFiles:{0}' -f $RemoveResidualFiles)
+    if ($StopRevit) { $passArgs += '-StopRevit' }
+    if ($ListOnly)  { $passArgs += '-ListOnly' }
+    if ($Force)     { $passArgs += '-Force' }
+    if ($LogPath)   { $passArgs += ('-LogPath "{0}"' -f $LogPath) }
+
+    $cmdLine = '-NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f $PSCommandPath, ($passArgs -join ' ')
+
+    try {
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $cmdLine -Verb RunAs -PassThru -Wait -ErrorAction Stop
+    }
+    catch {
+        # Thrown when the user clicks No / cancels the UAC prompt, or UAC is blocked.
+        Write-Host "Elevation was cancelled or blocked at the UAC prompt: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+
+    # ExitCode can be null for ShellExecute (RunAs) launches; default to 0.
+    $code = 0
+    if ($proc -and $null -ne $proc.ExitCode) { $code = $proc.ExitCode }
+    exit $code
 }
 
 # --- Logging --------------------------------------------------------------
