@@ -254,6 +254,7 @@ function Get-InstalledPrograms {
                 UninstallString      = Get-Prop $props 'UninstallString'
                 QuietUninstallString = Get-Prop $props 'QuietUninstallString'
                 WindowsInstaller     = [int](Get-Prop $props 'WindowsInstaller')
+                InstallLocation      = Get-Prop $props 'InstallLocation'
                 KeyName              = $_.PSChildName
                 RegistryPath         = $_.PsPath
             }
@@ -496,6 +497,20 @@ $rebootNeeded = $false
 $failures     = 0
 
 foreach ($product in $targets) {
+    # Fix MSI Error 1606 ("Could not access network location Revit <Year>\"):
+    # A corrupted Autodesk upgrade can leave InstallLocation as a relative path
+    # instead of absolute. MSI CostFinalize treats relative paths as network
+    # locations and aborts the uninstall with exit 1603 (1606 internally).
+    if (-not [string]::IsNullOrWhiteSpace($product.InstallLocation) -and $product.InstallLocation -notmatch '^([a-zA-Z]:[\\/]|\\\\)') {
+        $fixedPath = Join-Path ${env:ProgramFiles} "Autodesk\$($product.InstallLocation.Trim('\', '/'))"
+        Write-Log "Fixing corrupt InstallLocation to prevent Error 1606:`n      Old: $($product.InstallLocation)`n      New: $fixedPath" 'WARN'
+        try {
+            Set-ItemProperty -LiteralPath $product.RegistryPath -Name 'InstallLocation' -Value $fixedPath -ErrorAction Stop
+        } catch {
+            Write-Log "Failed to patch InstallLocation: $($_.Exception.Message)" 'WARN'
+        }
+    }
+ 
     $candidates = @(Get-UninstallCandidates -Product $product)
     if ($candidates.Count -eq 0) {
         Write-Log "No usable uninstall command for '$($product.DisplayName)'. Skipping." 'ERROR'
