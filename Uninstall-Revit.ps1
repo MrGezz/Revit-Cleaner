@@ -91,6 +91,7 @@ param(
     [ValidatePattern('^\d{4}$')]
     [string]$ProductYear       = '2026',
     [bool]$IncludeAddins       = $true,
+    [bool]$IncludeMaterialLibraries = $false,
     [bool]$RemoveResidualFiles = $true,
     [switch]$StopRevit,
     [switch]$ListOnly,
@@ -117,8 +118,6 @@ $CorePatterns = @(
 
 # Shared / cross-product components: NEVER touched in this mode.
 $SharedExclusions = @(
-    '*Material Library*',
-    '*Advanced Material Library*',
     '*Shared Components*',
     '*Licensing*',
     '*License*',
@@ -137,6 +136,12 @@ $SharedExclusions = @(
     '*Interoperability Engine Manager*',
     '*Desktop Connector*'
 )
+
+# Lock shared material packages out dynamically if explicit sweep is off
+if (-not $IncludeMaterialLibraries) {
+    $SharedExclusions += '*Material Library*'
+    $SharedExclusions += '*Advanced Material Library*'
+}
 
 # Revit <year>-specific residual folders removed only with -RemoveResidualFiles.
 # Every entry references a Revit/RVT <year> path; shared Autodesk trees are never
@@ -175,6 +180,7 @@ if (-not (Test-IsAdministrator)) {
     $passArgs = @()
     $passArgs += ('-ProductYear {0}'         -f $ProductYear)
     $passArgs += ('-IncludeAddins:{0}'       -f $IncludeAddins)
+    $passArgs += ('-IncludeMaterialLibraries:{0}' -f $IncludeMaterialLibraries)
     $passArgs += ('-RemoveResidualFiles:{0}' -f $RemoveResidualFiles)
     if ($StopRevit) { $passArgs += '-StopRevit' }
     if ($ListOnly)  { $passArgs += '-ListOnly' }
@@ -283,9 +289,14 @@ $targets = @(
         $name = $_.DisplayName
         $isCore = Test-MatchesAny -Value $name -Patterns $CorePatterns
         $isRevitYear = $IncludeAddins -and
-                       ($name -match '(?i)\bRevit\b|\bRVT\b') -and
+                       ($name -match '(?i)\bRevit\b|\bRVT\b|\bNavisworks\b.*?\bExport') -and
                        ($name -like "*$ProductYear*")
-        $isCore -or $isRevitYear
+ 
+        $isMaterialYear = $IncludeMaterialLibraries -and 
+                          ($name -match '(?i)Material Library') -and 
+                          ($name -like "*$ProductYear*")
+ 
+        $isCore -or $isRevitYear -or $isMaterialYear
     } |
     Where-Object { -not (Test-MatchesAny -Value $_.DisplayName -Patterns $SharedExclusions) } |
     Where-Object { $_.DisplayName -notmatch '\d{4}\s*[-–]\s*\d{4}' } |
@@ -397,6 +408,40 @@ function Get-MsiLocalPackage {
     return $null
 }
 
+
+
+function Repair-MsiUserDataCache {
+    param([string]$ProductCode, [string]$TargetYear)
+    # Deep-patch Error 1606 by recalculating to a "Squished" internal MSI GUID cache
+    if ($ProductCode -notmatch '^\{([0-9a-fA-F\-]{36})\}$') { return }
+    $raw = $matches[1] -replace '-'
+    
+    # Standard Windows Installer scrambling algorithm maps specific reverse-block orders
+    $parts = @(
+        $raw.Substring(0,8), $raw.Substring(8,4), $raw.Substring(12,4),
+        $raw.Substring(16,2), $raw.Substring(18,2), $raw.Substring(20,2),
+        $raw.Substring(22,2), $raw.Substring(24,2), $raw.Substring(26,2),
+        $raw.Substring(28,2), $raw.Substring(30,2)
+    )
+    $squished = ($parts | ForEach-Object { $c = $_.ToCharArray(); [array]::Reverse($c); -join $c }) -join ''
+
+    $msiHive = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\$squished\InstallProperties"
+    
+    if (Test-Path -LiteralPath $msiHive) {
+        try {
+            $il = Get-ItemProperty -Path $msiHive -Name 'InstallLocation' -ErrorAction SilentlyContinue
+            if ($null -eq $il -or [string]::IsNullOrWhiteSpace($il.InstallLocation) -or $il.InstallLocation -notmatch '^([a-zA-Z]:[\\/]|\\\\)') {
+                $fixPath = Join-Path ${env:ProgramFiles} "Autodesk\Revit $TargetYear\"
+                Set-ItemProperty -LiteralPath $msiHive -Name 'InstallLocation' -Value $fixPath -ErrorAction Stop
+                Write-Log "Patched internal MSI cache location to bypass Error 1606:`n      New: $fixPath" 'WARN'
+            }
+        } catch { 
+            Write-Log "Failed patching native cache InstallLocation: $($_.Exception.Message)" 'WARN' 
+        }
+    }
+}
+
+
 # Clears a stale SourceList (the actual trigger for the 1606 network-location
 # error) so any LATER msiexec call against the bare ProductCode - e.g. a
 # retry, or another tool - no longer tries to reach the dead network share.
@@ -435,14 +480,18 @@ function Get-UninstallCandidates {
     #    caller only as a generic exit 1603. Uninstalling from the cached
     #    LocalPackage path skips that source-resolution step entirely.
     if ($Product.WindowsInstaller -eq 1 -and $Product.KeyName -match '^\{[0-9A-Fa-f\-]{36}\}$') {
+        
+        # Fallback parameter guard. Binds an absolute drive and root targeting rule across corrupted msiexec sessions.
+        $fallBackProps = ' ROOTDRIVE="C:\" INSTALLDIR="' + ${env:ProgramFiles} + '\Autodesk\Revit ' + $ProductYear + '\"'
+ 
         $localMsi = Get-MsiLocalPackage -ProductCode $Product.KeyName
         if ($localMsi) {
-            $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x `"$localMsi`" /qn /norestart"; Kind = 'MSI-LocalPackage' }
+            $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x `"$localMsi`" /qn /norestart$fallBackProps"; Kind = 'MSI-LocalPackage' }
         }
         else {
             Clear-MsiSourceList -ProductCode $Product.KeyName
         }
-        $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x $($Product.KeyName) /qn /norestart"; Kind = 'MSI' }
+        $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x $($Product.KeyName) /qn /norestart$fallBackProps"; Kind = 'MSI' }
     }
 
     # 2) Vendor-provided silent command.
@@ -497,18 +546,10 @@ $rebootNeeded = $false
 $failures     = 0
 
 foreach ($product in $targets) {
-    # Fix MSI Error 1606 ("Could not access network location Revit <Year>\"):
-    # A corrupted Autodesk upgrade can leave InstallLocation as a relative path
-    # instead of absolute. MSI CostFinalize treats relative paths as network
-    # locations and aborts the uninstall with exit 1603 (1606 internally).
-    if (-not [string]::IsNullOrWhiteSpace($product.InstallLocation) -and $product.InstallLocation -notmatch '^([a-zA-Z]:[\\/]|\\\\)') {
-        $fixedPath = Join-Path ${env:ProgramFiles} "Autodesk\$($product.InstallLocation.Trim('\', '/'))"
-        Write-Log "Fixing corrupt InstallLocation to prevent Error 1606:`n      Old: $($product.InstallLocation)`n      New: $fixedPath" 'WARN'
-        try {
-            Set-ItemProperty -LiteralPath $product.RegistryPath -Name 'InstallLocation' -Value $fixedPath -ErrorAction Stop
-        } catch {
-            Write-Log "Failed to patch InstallLocation: $($_.Exception.Message)" 'WARN'
-        }
+ 
+    # Resolve strict directory formatting prior to building MSI / uninstallation tables block strings
+    if ($product.WindowsInstaller -eq 1) {
+        Repair-MsiUserDataCache -ProductCode $product.KeyName -TargetYear $ProductYear
     }
  
     $candidates = @(Get-UninstallCandidates -Product $product)
