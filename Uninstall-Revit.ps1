@@ -370,14 +370,77 @@ function Split-Command {
     return [pscustomobject]@{ File = $cl.Substring(0, $sp); Args = $cl.Substring($sp + 1).Trim() }
 }
 
+
+# Resolves the locally CACHED .msi for a given ProductCode via the Windows
+# Installer COM API (MSI "LocalPackage" property). Uninstalling from this
+# literal file path bypasses SourceList/network-source resolution entirely -
+# the fix for "Error 1606: Could not access network location <share>\" during
+# /x, which the caller otherwise only sees wrapped as a generic exit 1603
+# (visible instead in the per-product MSI*.LOG next to %TEMP%).
+function Get-MsiLocalPackage {
+    param([string]$ProductCode)
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        # INSTALLPROPERTY_LOCALPACKAGE = "LocalPackage"
+        $local = $installer.ProductInfo($ProductCode, 'LocalPackage')
+        if (-not [string]::IsNullOrWhiteSpace($local) -and (Test-Path -LiteralPath $local)) {
+            return $local
+        }
+    }
+    catch {
+        Write-Log "LocalPackage lookup failed for $ProductCode`: $($_.Exception.Message)" 'WARN'
+    }
+    finally {
+        if ($installer) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($installer) }
+    }
+    return $null
+}
+
+# Clears a stale SourceList (the actual trigger for the 1606 network-location
+# error) so any LATER msiexec call against the bare ProductCode - e.g. a
+# retry, or another tool - no longer tries to reach the dead network share.
+# Best-effort; failure here never blocks the uninstall itself.
+function Clear-MsiSourceList {
+    param([string]$ProductCode)
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        # MsiSourceListClearAllEx via the Installer.SourceListClearAll method
+        # (context 7 = MSIINSTALLCONTEXT_ALL, options 4 = MSICODE_PRODUCT).
+        $installer.GetType().InvokeMember(
+            'SourceListClearAll', 'InvokeMethod', $null, $installer,
+            @($ProductCode, $null, 7)) | Out-Null
+        Write-Log "Cleared stale SourceList for $ProductCode" 'INFO'
+    }
+    catch {
+        # Non-fatal - not every Windows Installer version exposes this verb.
+    }
+    finally {
+        if ($installer) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($installer) }
+    }
+}
+
+
 # Build an ordered list of uninstall attempts. If one method fails the caller
 # falls through to the next.
 function Get-UninstallCandidates {
     param($Product)
     $list = @()
 
-    # 1) MSI product code (deterministic) when the registry key is a GUID.
+    # 1) MSI, preferring the LOCALLY CACHED .msi over the bare product code.
+    #    Uninstalling by ProductCode makes Windows Installer re-validate the
+    #    ORIGINAL install source (SourceList) before it will proceed; if that
+    #    was a network share that's now gone, MSI aborts with
+    #    "Error 1606: Could not access network location ...", surfaced to the
+    #    caller only as a generic exit 1603. Uninstalling from the cached
+    #    LocalPackage path skips that source-resolution step entirely.
     if ($Product.WindowsInstaller -eq 1 -and $Product.KeyName -match '^\{[0-9A-Fa-f\-]{36}\}$') {
+        $localMsi = Get-MsiLocalPackage -ProductCode $Product.KeyName
+        if ($localMsi) {
+            $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x `"$localMsi`" /qn /norestart"; Kind = 'MSI-LocalPackage' }
+        }
+        else {
+            Clear-MsiSourceList -ProductCode $Product.KeyName
+        }
         $list += [pscustomobject]@{ File = 'msiexec.exe'; Args = "/x $($Product.KeyName) /qn /norestart"; Kind = 'MSI' }
     }
 
