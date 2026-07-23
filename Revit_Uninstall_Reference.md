@@ -6,7 +6,10 @@ Derived from a verified Revit 2026 removal on machine `ICECREAMASSASIN`
 (2026-07-17), then generalized to any year. The delivered script is
 `Uninstall-Revit.ps1` (PowerShell 5.1 compatible, self-elevating,
 year-parameterized via `-ProductYear`, default 2026). Published to GitHub with
-an MIT LICENSE and a README (author: MrGezz).
+an MIT LICENSE and a README (author: MrGezz). Current revision: 2026-07-24
+(MSI-LocalPackage + MSI-PropsOverride resolution, 1606 root-cause fix, rebuilt
+self-elevation, automated 2753 neutralize→recache→retry — see lessons 7–12 and
+the troubleshooting section).
 
 ## What worked
 
@@ -15,7 +18,7 @@ installer. The MSI-based add-ins uninstalled instantly by product code.
 Shared components (material libraries, licensing, RealDWG, Content Catalog)
 were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
 
-## Six lessons that cost debugging cycles
+## Twelve lessons that cost debugging cycles
 
 1. **Never route an Autodesk uninstall command through `cmd /c`.** The ODIS
    `UninstallString` is *unquoted* and its executable path contains a space
@@ -72,6 +75,68 @@ were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
    elevated relaunch opens a *separate* window that closes on completion — read
    the `%TEMP%` log for results, not the original window.
 
+7. **`powershell.exe -File` cannot bind `[bool]` parameters at all (nor
+   `-Switch:$false`).** PS 5.1 passes every `-File` argument as a literal string
+   and rejects it with "Boolean parameters accept only Boolean values and
+   numbers" — verified on this machine for `True`, `False`, `1`, `0`, and
+   `$false`. The elevated child died at parameter binding *before*
+   `Start-Transcript`: no log, elevation "does nothing". Amends lesson 6: the
+   single pre-quoted string is still right, but it must be a `-Command` line —
+   `-Command "& '<single-quoted path>' <args>; exit $LASTEXITCODE"`. Bools then
+   parse natively and a spaced path survives. The trailing
+   `; exit $LASTEXITCODE` is mandatory: in `-Command` mode an `exit N` inside
+   the invoked *script* only sets `$LASTEXITCODE`, and the child collapses every
+   non-zero script exit to 1 (verified: `exit 42` → 1 without it, 42 with it).
+
+8. **Do not GUID-collapse msiexec candidates that carry `PROPERTY=` overrides.**
+   De-duping msiexec attempts by extracted GUID alone silently deleted the
+   `MSI-PropsOverride` candidate (same GUID as the plain `/x {guid}` attempt),
+   so the 1606 workaround never ran — transcripts show only two methods ever
+   executing. Candidates with property assignments are functionally different
+   commands; key them by their full normalized command line.
+
+9. **Never end a quoted msiexec property value with a backslash.**
+   `INSTALLDIR="C:\...\Revit 2023\"` — the `\"` escapes the closing quote and
+   mangles every argument after it. Drop the trailing backslash inside quotes
+   (MSI normalizes it back), and pass `ROOTDRIVE=C:\` unquoted (no spaces, and
+   MSI requires *its* trailing backslash).
+
+10. **One `/L*V` log per attempt.** `/L*V` truncates on open, so attempts
+    sharing a filename destroy each other's evidence — the LocalPackage and
+    bare-MSI attempts of one run were observed writing the identical file.
+    Name logs `MSIVerbose_<guid>_<stamp>_<Kind>.log`.
+
+11. **Maintenance mode always runs from the REGISTERED cached package.**
+    `msiexec /x <path>.msi` uses the path only to identify the product — the
+    verbose log's `Package we're running from ==>` line shows the registered
+    cache, so table edits in a side copy are never seen. The working route for
+    delivering an edited database (proven on the Revit 2023 core,
+    2026-07-24): edit a %TEMP% copy → `msiexec /fv "<copy>"` to RECACHE it
+    (accepted because the PackageCode is unchanged; carry the INSTALLDIR
+    override since repair costing hits DIRCA_INSTALLDIR too) → then a plain
+    product-code `/x`. Two hard requirements: the copy MUST keep the
+    registered package's exact FILE NAME (repair source resolution probes
+    `SOURCEDIR + <registered PackageName>` and fails 2203/1316 + SECREPAIR
+    otherwise — use a per-run subfolder), and the registered language
+    transform must not touch the edited row (verify via `ApplyTransform`
+    before betting on it). Also: C:\Windows\Installer cannot be edited in
+    place — transacted opens are refused there even elevated.
+
+12. **PowerShell 5.1 + Windows Installer COM has three traps, all observed
+    live.** (a) `InvokeMember('OpenDatabase', ...)` can throw
+    DISP_E_TYPEMISMATCH where DIRECT dispatch (`$installer.OpenDatabase()`)
+    succeeds on identical arguments — try direct first, keep InvokeMember as
+    fallback. (b) Direct-dispatch VOID COM calls (`Execute`, `Close`,
+    `Commit`) emit `$null` into the function's output stream, so an
+    uncaptured sequence of them turns the function's return value into an
+    array (symptom: `/x "    C:\...msi"` with leading spaces → relative-path
+    resolution → 1619). `[void]`-cast every one. (c) RCWs keep the database's
+    FILE HANDLE open until finalized — ReleaseComObject on every wrapper
+    (including fetched Records and replaced Views) plus
+    `[GC]::Collect(); [GC]::WaitForPendingFinalizers(); [GC]::Collect()`
+    before handing the file to msiexec, or it fails 1619 with
+    0x80030020 STG_E_SHAREVIOLATION.
+
 ## Product-selection rule (the reliable part)
 
 - **Core:** display name matches `Autodesk Revit <year>`.
@@ -98,12 +163,32 @@ were preserved, and AutoCAD/Navisworks 2026 (separate apps) were untouched.
 
 ## Uninstall command resolution order (per product)
 
-1. MSI product code — `msiexec.exe /x {GUID} /qn /norestart` — when
+1. MSI-LocalPackage — `msiexec.exe /x "C:\Windows\Installer\<cached>.msi"` —
+   uninstall from the cached local package (resolved via the Windows Installer
+   COM `LocalPackage` property), bypassing SourceList/network-source resolution.
+2. MSI product code — `msiexec.exe /x {GUID} /qn /norestart` — when
    `WindowsInstaller = 1` and the registry key name is a GUID. Most deterministic.
-2. `QuietUninstallString` (run the exe directly, not via cmd).
-3. Raw `UninstallString` (run the exe directly; coerce msiexec `/I`→`/X` and add
+3. MSI-PropsOverride — product code plus `ROOTDRIVE=C:\ INSTALLDIR="<ProgramFiles>\
+   Autodesk\Revit <year>"` — deliberately LAST among the MSI attempts because
+   forcing directory properties on an uninstall can flip component conditions
+   (2753 risk), but it is the attempt that clears the DIRCA_INSTALLDIR 1606
+   (see troubleshooting below).
+4. `QuietUninstallString` (run the exe directly, not via cmd).
+5. Raw `UninstallString` (run the exe directly; coerce msiexec `/I`→`/X` and add
    `/qn /norestart`; for ODIS EXE uninstallers, try `--silent` first with the
    exact vendor command as fallback). This is the ODIS path for the core product.
+
+Every MSI attempt writes its own verbose log:
+`%TEMP%\MSIVerbose_<guid>_<stamp>_<Kind>.log`.
+
+When an MSI attempt exits 1603 and its log shows **Internal Error 2753**, the
+script auto-remediates (`-NeutralizeBrokenCustomActions`, default on): it
+copies the cached package to `%TEMP%\RevitCleanerPatch_<stamp>\<registered
+name>.msi` (pristine backup saved alongside as `<name>_pristine_<stamp>.msi`),
+conditions the named action out (`'0'`), recaches via `/fv`, and retries by
+product code (`MSI-Recached`). Bounded at 5 repairs per method. This is what
+finally removed the Revit 2023 core on 2026-07-24 (exit 0 + full residual
+cleanup; a re-run confirmed the product gone).
 
 Treat exit codes `0`, `3010` (reboot required), and `1605` (already gone) as
 success. Try each candidate in order; fall through on any other code.
@@ -198,11 +283,74 @@ Steps when reinstalling:
 3. If Autodesk Access still lists the product as installed (UI-cache quirk from
    uninstalling outside Access), refresh/repair or reboot to correct it.
 
+## Troubleshooting stubborn products (see TROUBLESHOOTING.md)
+
+Failures are almost always damaged Windows Installer state on the machine, not a
+script bug. Codes seen in practice:
+
+- `1605` already gone (success), `3010` reboot-required (success), `1618`
+  another install running (retry).
+- **`1606`** "Could not access network location <x>\" — two distinct causes:
+  1. **(proven on this machine, Revit 2023 core)** The MSI's own Type-51 action
+     `DIRCA_INSTALLDIR` composes `INSTALLDIR = [INSTALLDIR][ADSK_INSTALL_PATH]\`
+     (condition `NOT INSTALLDIR><ADSK_INSTALL_PATH`, `><` = "contains";
+     `ADSK_INSTALL_PATH = "Revit <year>"`). Uninstalling directly with msiexec
+     (outside ODIS) INSTALLDIR arrives empty, so it becomes the bare relative
+     fragment `Revit <year>\` and CostFinalize dies (Note 1314 →
+     `Error 1606. Could not access network location Revit <year>\`), surfaced
+     only as generic exit 1603. **Fix:** pass an absolute `INSTALLDIR`
+     *containing* the `Revit <year>` token — the contains-condition goes false,
+     the CA skips, the override survives. The script's `MSI-PropsOverride`
+     attempt does exactly this. It is **not** a SourceList problem — the
+     SourceList was verified healthy while this fired.
+  2. A broken shell-folder registry value (`User Shell Folders` /
+     `Shell Folders`) pointing at an invalid or blank path. Permanent cure is
+     fixing the offending registry value (see TROUBLESHOOTING.md).
+- **`1603` + Internal Error `2753`** ("the file is not marked for installation")
+  — a custom action sourced from an installed file whose component registration
+  is damaged (interrupted uninstall or bad patch). A plain `msiexec /x`
+  (product code or cached-package path) cannot get past it because maintenance
+  mode always executes the REGISTERED cache (lesson 11). **Fix (automated):**
+  the script's neutralize → `/fv` recache → product-code retry chain
+  (`-NeutralizeBrokenCustomActions`, default on) — this is what removed the
+  Revit 2023 core on 2026-07-24. **Fallback (manual):** Microsoft Program
+  Install and Uninstall Troubleshooter
+  (`MicrosoftProgram_Install_and_Uninstall.meta.diagcab`) → Uninstalling →
+  force-remove, then re-run the script (core returns 1605 = success). Note:
+  forcing `INSTALLDIR`/`ROOTDRIVE` on an uninstall can itself provoke 2753 by
+  flipping component conditions — which is why `MSI-PropsOverride` runs LAST.
+  Machine state also drifts: a product that returned 2753 one day can return
+  plain 1606 later; always diagnose from the *newest* `MSIVerbose_*_<Kind>.log`.
+
+Verified case: `-ProductYear 2023` on ICECREAMASSASIN (2026-07-23) removed all 12
+Navisworks 2023 exporters cleanly but `Revit 2023` core kept failing 1603
+(earlier in the day as 2753; by the final runs as pure 1606 at CostFinalize —
+machine state drifted). Root cause decoded from the cached MSI
+(`C:\Windows\Installer\1d05a2.msi`): the `DIRCA_INSTALLDIR` mechanism above.
+The dedup defect (lesson 8) had silently removed the `MSI-PropsOverride`
+attempt, so the fix never ran. Revit 2023 core product code:
+`{7346B4A0-2300-0510-0000-705C0D862004}`. **Resolved 2026-07-24:** after the
+lesson 11/12 fixes, the neutralize → `/fv` recache → product-code retry chain
+removed the core with exit 0, residual cleanup ran, and a verification re-run
+found no Revit 2023 products remaining. The Microsoft troubleshooter was never
+needed.
+
+Folded into the repo copy 2026-07-23 (supersedes canonical v7): the
+`MSI-LocalPackage` method, the `MSI-PropsOverride` last-resort, SourceList
+dump/purge helpers, plus seven fixes — dedup no longer GUID-collapses
+property-carrying candidates (lesson 8); trailing-backslash quoting corrected
+(lesson 9); self-elevation rebuilt on `-Command` with exit-code propagation
+(lesson 7); per-attempt verbose MSI logs (lesson 10); registry surgery
+(`Repair-MsiUserDataCache` + SourceList purge) moved after the Read-Host /
+ShouldProcess consent gates; StrictMode-safe `$installer = $null` pre-init
+before the COM try/finally blocks; `Repair-MsiUserDataCache` reuses
+`Get-MsiSquishedGuid` instead of duplicating the squish algorithm.
+
 ## Repo
 
-Lives at `C:\Users\IcZ\source\repos\Revit-Cleaner` (git). Files:
-`Uninstall-Revit.ps1`, `README.md`, `LICENSE` (MIT), and this reference
-(`Revit_Uninstall_Reference.md`). User handles git commits manually. The old
+Lives at `C:\Users\IceCreamAssasin\source\repos\Revit-Cleaner` (git). Files:
+`Uninstall-Revit.ps1`, `README.md`, `LICENSE` (MIT), `TROUBLESHOOTING.md`, and
+this reference (`Revit_Uninstall_Reference.md`). User handles git commits manually. The old
 `Uninstall-Revit2026.ps1` was renamed to `Uninstall-Revit.ps1`
 (`git rm`/`git mv` the stale name).
 

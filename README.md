@@ -11,7 +11,8 @@ Autodesk products don't uninstall as a single item. The core application, every 
 - **Any Revit year** via `-ProductYear` — one script for 2023–2027+.
 - **Registry-driven discovery** across the 64-bit, 32-bit (WOW6432Node), and per-user uninstall hives — no hardcoded product GUIDs.
 - **Correct ODIS invocation.** Runs Autodesk's `AdODIS\V1\installer.exe` directly (not through `cmd`), so its unquoted, space-containing path is handled properly.
-- **Multi-method resolution** per product: MSI product code → `QuietUninstallString` → raw `UninstallString`, trying each in order until one succeeds.
+- **Multi-method resolution** per product: cached local `.msi` (LocalPackage) → MSI product code → MSI with directory-property override (clears the stubborn "Error 1606 … `Revit <year>\`" case) → `QuietUninstallString` → raw `UninstallString`, trying each in order until one succeeds.
+- **Per-attempt verbose MSI logs** (`%TEMP%\MSIVerbose_<guid>_<stamp>_<Kind>.log`), so a failed attempt's evidence is never overwritten by the next one.
 - **Precise "Revit + year" sweep** for orphaned add-ins/content, with hard exclusions for shared and cross-version components.
 - **Self-elevation** via UAC — launch from a normal shell (handles script paths containing spaces).
 - **Preview mode** (`-ListOnly`) and full `-WhatIf` support.
@@ -51,6 +52,8 @@ Run `-ListOnly` first. It is the safety gate: it shows exactly what will be remo
 |---|---|---|---|
 | `-ProductYear` | string | `2026` | Four-digit Revit release year to target (e.g. `2024`). Scopes the core match, add-in sweep, residual folders, the residual guard, and the self-elevation relaunch. Validated as four digits. |
 | `-IncludeAddins` | bool | `$true` | Also remove every product whose name references Revit **and** the target year (add-ins, content, exporters, DB Link, IFC, interop tools). Disable with `-IncludeAddins:$false`. |
+| `-IncludeMaterialLibraries` | bool | `$false` | Opt in to also remove Material Library packages matching the target year. Off by default because material libraries are commonly shared across products. |
+| `-NeutralizeBrokenCustomActions` | bool | `$true` | On `1603` + `Internal Error 2753`, automatically neutralize the broken custom action in a patched copy of the cached package, recache it (`/fv`), and retry — see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). Disable with `-NeutralizeBrokenCustomActions:$false`. |
 | `-RemoveResidualFiles` | bool | `$true` | After a successful uninstall, delete leftover Revit-`<year>`-specific folders (settings, journals, add-in manifests, RVT content, program folder). Disable with `-RemoveResidualFiles:$false`. |
 | `-StopRevit` | switch | off | Terminate `Revit.exe` if running. Without it, the script aborts when Revit is open. |
 | `-ListOnly` | switch | off | Discover and print matches, then exit. No changes. |
@@ -63,9 +66,11 @@ Run `-ListOnly` first. It is the safety gate: it shows exactly what will be remo
 
 **Uninstall resolution (per product), tried in order:**
 
-1. `msiexec.exe /x {GUID} /qn /norestart` — when the product is Windows Installer-based with a GUID key. Fully silent, deterministic.
-2. `QuietUninstallString` — the vendor's own silent command, run directly.
-3. Raw `UninstallString` — for EXE uninstallers (Autodesk ODIS), a `--silent` variant is attempted first with the exact vendor command kept as an automatic fallback, so a wrong silent flag can never block the uninstall.
+1. `msiexec.exe /x "C:\Windows\Installer\<cached>.msi" /qn /norestart` — the locally cached package (resolved via the Windows Installer COM API), which bypasses network-source resolution.
+2. `msiexec.exe /x {GUID} /qn /norestart` — the product code. Fully silent, deterministic.
+3. `msiexec.exe /x {GUID} … ROOTDRIVE=C:\ INSTALLDIR="…\Autodesk\Revit <year>"` — a last-resort directory-property override that clears the case where the MSI's own uninstall sequence composes a relative `INSTALLDIR` and dies with `Error 1606. Could not access network location Revit <year>\` (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)). Kept last because property overrides can themselves provoke error 2753 on some packages.
+4. `QuietUninstallString` — the vendor's own silent command, run directly.
+5. Raw `UninstallString` — for EXE uninstallers (Autodesk ODIS), a `--silent` variant is attempted first with the exact vendor command kept as an automatic fallback, so a wrong silent flag can never block the uninstall.
 
 Exit codes `0`, `3010` (reboot required), and `1605` (already gone) are treated as success.
 
@@ -78,7 +83,11 @@ Exit codes `0`, `3010` (reboot required), and `1605` (already gone) are treated 
 
 ## Logging
 
-Every run writes a full transcript to `%TEMP%\Uninstall-Revit<year>_<timestamp>.log`, including each product matched, the exact command invoked, and the exit code. Attach this log when reporting issues.
+Every run writes a full transcript to `%TEMP%\Uninstall-Revit<year>_<timestamp>.log`, including each product matched, the exact command invoked, and the exit code. Each MSI attempt additionally writes its own verbose Windows Installer log to `%TEMP%\MSIVerbose_<guid>_<stamp>_<Kind>.log`. Attach these logs when reporting issues.
+
+## Troubleshooting
+
+Stuck on exit `1603`, `1606`, or Internal Error `2753`? The script handles the two hard cases automatically: the relative-`INSTALLDIR` 1606 (directory-property override) and the damaged-custom-action 2753 (neutralize → recache → retry). See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for the full error-code map and the manual fallback routes.
 
 ## Reinstalling Revit later
 
